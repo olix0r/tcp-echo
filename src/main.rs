@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 extern crate futures;
 extern crate tokio;
 extern crate trust_dns_resolver;
@@ -12,9 +10,7 @@ use std::time::{Duration, Instant};
 use std::{env, process};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::timer::Delay;
-use trust_dns_resolver::{
-    config::ResolverConfig, lookup_ip::LookupIp, system_conf, AsyncResolver, BackgroundLookupIp,
-};
+use trust_dns_resolver::{system_conf, AsyncResolver};
 
 fn main() {
     let mut args = env::args();
@@ -214,5 +210,3 @@ impl Future for DriveEcho {
         }
     }
 }
-
-// === Client ===
