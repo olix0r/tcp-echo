@@ -1,0 +1,11 @@
+[package]
+name = "init-net-test"
+version = "0.1.0"
+authors = ["Oliver Gould <ver@buoyant.io>"]
+edition = "2018"
+
+[dependencies]
+bytes = "0.4"
+futures = "0.1"
+tokio = "0.1.14"
+trust-dns-resolver = "0.10.1"
