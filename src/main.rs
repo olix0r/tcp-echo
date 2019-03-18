@@ -80,6 +80,7 @@ fn client(mut args: env::Args) {
     tokio::run(futures::lazy(move || {
         tokio::spawn(daemon);
 
+        let mut t0 = Some(Instant::now());
         future::loop_fn(host, move |host| {
             resolver
                 .lookup_ip(host.as_str())
@@ -88,18 +89,42 @@ fn client(mut args: env::Args) {
                     let ip = ips.iter().next().expect("must resolve to at least one IP");
                     println!("resolved host: {} => {}", host, ip);
                     let addr = SocketAddr::from((ip, port));
-                    tokio::net::TcpStream::connect(&addr)
-                        .map_err(|e| eprintln!("failed to connect: {}", e))
-                        .and_then(move |socket| {
-                            println!("connected to {} at {}", host, addr);
-                            let buf = Cursor::new(Bytes::from("heya"));
-                            DriveEcho(socket, Some(DriveEchoInner::Write(buf))).and_then(|buf| {
-                                println!("read {:?}", ::std::str::from_utf8(buf.as_ref()).unwrap());
-                                Delay::new(Instant::now() + Duration::from_secs(1))
-                                    .map_err(|_| panic!("timer failed"))
-                                    .map(|_| future::Loop::Continue(host))
-                            })
+                    tokio::net::TcpStream::connect(&addr).then(move |s| {
+                        let f = match s {
+                            Err(e) => {
+                                eprintln!("failed to connect: {}", e);
+                                future::Either::A(future::ok(()))
+                            }
+                            Ok(socket) => {
+                                match t0.take().map(|t| t.elapsed()) {
+                                    None => println!("connected to {} at {}", host, addr),
+                                    Some(d) => println!(
+                                        "connected to {} at {} after {}ms",
+                                        host,
+                                        addr,
+                                        d.as_secs() + u64::from(d.subsec_millis()),
+                                    ),
+                                }
+                                let buf = Cursor::new(Bytes::from("heya"));
+                                future::Either::B(
+                                    DriveEcho(socket, Some(DriveEchoInner::Write(buf))).map(
+                                        |buf| {
+                                            println!(
+                                                "read {:?}",
+                                                ::std::str::from_utf8(buf.as_ref()).unwrap()
+                                            );
+                                        },
+                                    ),
+                                )
+                            }
+                        };
+
+                        f.then(move |_| {
+                            Delay::new(Instant::now() + Duration::from_millis(100))
+                                .map_err(|_| panic!("timer failed"))
+                                .map(|_| future::Loop::Continue(host))
                         })
+                    })
                 })
         })
     }));
