@@ -1,6 +1,4 @@
-extern crate futures;
-extern crate tokio;
-extern crate trust_dns_resolver;
+#![deny(warnings, rust_2018_idioms)]
 
 use bytes::{Bytes, BytesMut, IntoBuf};
 use futures::{future, Async, Future, Poll, Stream};
