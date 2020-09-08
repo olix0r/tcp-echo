@@ -1,5 +1,5 @@
-ARG RUST_IMAGE=rust:1.39.0
-ARG RUNTIME_IMAGE=debian:stretch-20190204-slim
+ARG RUST_IMAGE=rust:1.45.2
+ARG RUNTIME_IMAGE=debian:buster-20200803-slim
 
 FROM $RUST_IMAGE as build
 WORKDIR /usr/src/init-net-test
