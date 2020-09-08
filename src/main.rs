@@ -1,21 +1,22 @@
 #![deny(warnings, rust_2018_idioms)]
 
-use bytes::{Bytes, BytesMut, IntoBuf};
-use futures::{future, Async, Future, Poll, Stream};
-use std::io::Cursor;
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
-use std::{env, process};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::timer::Delay;
-use trust_dns_resolver::{system_conf, AsyncResolver};
+use bytes::BytesMut;
+use futures::prelude::*;
+use std::{env, net::SocketAddr, process};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    prelude::*,
+    time,
+};
+use trust_dns_resolver::{system_conf, AsyncResolver, TokioAsyncResolver};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut args = env::args();
     let _ = args.next().expect("must have at least a program name");
     match args.next() {
-        Some(ref n) if n == "client" => client(args),
-        Some(ref n) if n == "server" => server(args),
+        Some(ref n) if n == "client" => client(args).await,
+        Some(ref n) if n == "server" => server(args).await,
         a => {
             eprintln!("need at least one argument: {:?}", a);
             usage();
@@ -29,7 +30,7 @@ fn usage() -> ! {
     process::exit(64);
 }
 
-fn server(mut args: env::Args) {
+async fn server(mut args: env::Args) {
     let port = match args.next() {
         Some(p) => p.parse::<u16>().expect("port must be valid"),
         None => usage(),
@@ -39,24 +40,23 @@ fn server(mut args: env::Args) {
     }
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    tokio::run(futures::lazy(move || {
-        tokio::net::TcpListener::bind(&addr)
-            .expect("must bind")
-            .incoming()
-            .for_each(|socket| {
-                println!("accepted");
-                let _ = socket.set_nodelay(true);
-                tokio::spawn(ServeEcho(
-                    socket,
-                    Some(ServeEchoInner::Read(BytesMut::with_capacity(1024 * 16))),
-                ));
-                Ok(())
-            })
-            .map_err(|e| panic!("listener failed: {}", e))
-    }));
+    let mut server = TcpListener::bind(&addr).await.expect("must bind");
+    let mut incoming = server.incoming();
+
+    while let Some(socket) = incoming.try_next().await.expect("Server failed") {
+        let peer = socket.peer_addr().unwrap();
+        let _ = socket.set_nodelay(true);
+        tokio::spawn(async move {
+            println!("Processing connection from {}", peer);
+            match serve_conn(socket).await {
+                Ok(sz) => println!("Echoed {}B from {}", sz, peer),
+                Err(e) => eprintln!("Failed to serve connection from {}: {}", peer, e),
+            }
+        });
+    }
 }
 
-fn client(mut args: env::Args) {
+async fn client(mut args: env::Args) {
     let host = match args.next() {
         Some(h) => h,
         None => usage(),
@@ -69,167 +69,64 @@ fn client(mut args: env::Args) {
         usage();
     }
 
-    let (resolver, daemon) = {
+    let mut resolver = {
         let (c, mut o) = system_conf::read_system_conf().expect("DNS configuration must be valid");
         o.cache_size = 0;
-        AsyncResolver::new(c, o)
+        AsyncResolver::tokio(c, o)
+            .await
+            .expect("DNS resolver must be valid")
     };
 
-    tokio::run(futures::lazy(move || {
-        tokio::spawn(daemon);
+    const BASE_SLEEP: time::Duration = time::Duration::from_millis(100);
+    const MESSAGE: &str = "heya!
 
-        let mut t0 = Some(Instant::now());
-        future::loop_fn(host, move |host| {
-            resolver
-                .lookup_ip(host.as_str())
-                .map_err(|e| eprintln!("failed to lookup ip: {}", e))
-                .and_then(move |ips| {
-                    let ip = ips.iter().next().expect("must resolve to at least one IP");
-                    println!("resolved host: {} => {}", host, ip);
-                    let addr = SocketAddr::from((ip, port));
-                    tokio::net::TcpStream::connect(&addr).then(move |s| {
-                        let f = match s {
-                            Err(e) => {
-                                eprintln!("failed to connect: {}", e);
-                                future::Either::A(future::ok(()))
-                            }
-                            Ok(socket) => {
-                                match t0.take().map(|t| t.elapsed()) {
-                                    None => println!("connected to {} at {}", host, addr),
-                                    Some(d) => println!(
-                                        "connected to {} at {} after {}ms",
-                                        host,
-                                        addr,
-                                        d.as_secs() + u64::from(d.subsec_millis()),
-                                    ),
-                                }
-                                let buf = Cursor::new(Bytes::from("heya"));
-                                future::Either::B(
-                                    DriveEcho(socket, Some(DriveEchoInner::Write(buf))).map(
-                                        |buf| {
-                                            println!(
-                                                "read {:?}",
-                                                ::std::str::from_utf8(buf.as_ref()).unwrap()
-                                            );
-                                        },
-                                    ),
-                                )
-                            }
-                        };
-
-                        f.then(move |_| {
-                            Delay::new(Instant::now() + Duration::from_millis(100))
-                                .map_err(|_| panic!("timer failed"))
-                                .map(|_| future::Loop::Continue(host))
-                        })
-                    })
-                })
-        })
-    }));
-}
-
-// === Server ===
-
-struct ServeEcho(tokio::net::TcpStream, Option<ServeEchoInner>);
-
-enum ServeEchoInner {
-    Read(BytesMut),
-    Write(Cursor<Bytes>),
-}
-
-impl Future for ServeEcho {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            match self.1.take().expect("polled after complete") {
-                ServeEchoInner::Read(mut buf) => {
-                    match self
-                        .0
-                        .read_buf(&mut buf)
-                        .map_err(|e| eprintln!("read failed: {}", e))?
-                    {
-                        Async::NotReady => {
-                            self.1 = Some(ServeEchoInner::Read(buf));
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready(sz) => {
-                            println!("read {}B", sz);
-                            self.1 = Some(ServeEchoInner::Write(buf.freeze().into_buf()));
-                        }
-                    }
-                }
-                ServeEchoInner::Write(mut buf) => {
-                    match self
-                        .0
-                        .write_buf(&mut buf)
-                        .map_err(|e| eprintln!("read failed: {}", e))?
-                    {
-                        Async::NotReady => {
-                            self.1 = Some(ServeEchoInner::Write(buf));
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready(sz) => {
-                            println!("wrote {}B", sz);
-                            return Ok(Async::Ready(()));
-                        }
-                    }
-                }
+    how's it going?
+    ";
+    let mut buf = BytesMut::with_capacity(MESSAGE.len());
+    let mut sleep = BASE_SLEEP;
+    loop {
+        sleep = match client_send(&mut resolver, &host, port, MESSAGE, &mut buf).await {
+            Err(e) => {
+                eprintln!("Failed to send message: {}", e);
+                sleep * 2
             }
-        }
+            Ok(sz) => {
+                println!(
+                    "Read {}B: {:?}",
+                    sz,
+                    ::std::str::from_utf8(buf.as_ref()).unwrap()
+                );
+                BASE_SLEEP
+            }
+        };
+        buf.clear();
+
+        time::delay_for(sleep).await;
     }
 }
 
-// === Client ===
+async fn client_send(
+    resolver: &mut TokioAsyncResolver,
+    host: &str,
+    port: u16,
+    msg: &str,
+    buf: &mut BytesMut,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let ips = resolver.lookup_ip(host).await?;
+    let ip = ips.iter().next().expect("must resolve to at least one IP");
+    let addr = SocketAddr::from((ip, port));
 
-struct DriveEcho(tokio::net::TcpStream, Option<DriveEchoInner>);
-
-enum DriveEchoInner {
-    Write(Cursor<Bytes>),
-    Read(BytesMut),
+    let mut socket = TcpStream::connect(&addr).await?;
+    println!("Connected to {} at {}", host, addr);
+    socket.write_all(msg.as_bytes()).await?;
+    socket.read_buf(buf).err_into().await
 }
 
-impl Future for DriveEcho {
-    type Item = Bytes;
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            match self.1.take().expect("polled after complete") {
-                DriveEchoInner::Write(mut buf) => {
-                    match self
-                        .0
-                        .write_buf(&mut buf)
-                        .map_err(|e| eprintln!("read failed: {}", e))?
-                    {
-                        Async::NotReady => {
-                            self.1 = Some(DriveEchoInner::Write(buf));
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready(sz) => {
-                            println!("wrote {}B", sz);
-                            self.1 = Some(DriveEchoInner::Read(BytesMut::with_capacity(8 * 1024)));
-                        }
-                    }
-                }
-                DriveEchoInner::Read(mut buf) => {
-                    match self
-                        .0
-                        .read_buf(&mut buf)
-                        .map_err(|e| eprintln!("read failed: {}", e))?
-                    {
-                        Async::NotReady => {
-                            self.1 = Some(DriveEchoInner::Read(buf));
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready(sz) => {
-                            println!("read {}B", sz);
-                            return Ok(Async::Ready(buf.freeze()));
-                        }
-                    }
-                }
-            }
-        }
-    }
+async fn serve_conn(
+    mut socket: TcpStream,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let mut buf = [0u8; 1024 * 8];
+    let sz = socket.read(&mut buf).await?;
+    socket.write_all(&buf).await?;
+    Ok(sz)
 }

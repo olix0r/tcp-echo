@@ -6,7 +6,7 @@ edition = "2018"
 publish = false
 
 [dependencies]
-bytes = "0.4"
-futures = "0.1"
-tokio = "0.1"
-trust-dns-resolver = "0.11"
+bytes = "0.5"
+futures = "0.3"
+tokio = { version = "0.2", features = ["io-util", "macros", "rt-threaded", "stream"] }
+trust-dns-resolver = "0.19.5"
