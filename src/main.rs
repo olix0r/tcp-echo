@@ -77,7 +77,7 @@ async fn client(mut args: env::Args) {
             .expect("DNS resolver must be valid")
     };
 
-    const BASE_SLEEP: time::Duration = time::Duration::from_millis(100);
+    const BASE_SLEEP: time::Duration = time::Duration::from_secs(10);
     const MESSAGE: &str = "heya!
 
     how's it going?
