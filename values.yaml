@@ -1,9 +1,12 @@
 client:
   replicas: 1
-  linkerd:
-    inject: enabled
+  linkerdInject: true
+
 server:
   services: 1
   replicas: 1
-  linkerd:
-    inject: enabled
+  linkerdInject: true
+
+linkerd:
+  #proxyImage: ...
+  #proxyVersion: ...

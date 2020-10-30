@@ -17,8 +17,14 @@ spec:
       labels:
         app: init-net-test
         role: client
-      annotation:
-        linkerd.io/inject: {{.Values.client.linkerd.inject}}
+      annotations:
+        linkerd.io/inject: {{.Values.client.linkerdInject | default false | ternary "enabled" "disabled" }}
+{{- if .Values.linkerd.proxyImage}}
+        config.linkerd.io/proxy-image: {{.Values.linkerd.proxyImage}}
+{{- end}}
+{{- if .Values.linkerd.proxyVersion}}
+        config.linkerd.io/proxy-version: {{.Values.linkerd.proxyVersion}}
+{{- end}}
     spec:
       containers:
         - name: main
@@ -27,5 +33,5 @@ spec:
             - client
 {{- range $i, $e := until (.Values.server.services | int) }}
             - "tcp://echo-{{$i}}:4444"
-{{- end -}}
+{{- end}}
 

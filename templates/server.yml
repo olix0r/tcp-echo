@@ -1,6 +1,7 @@
 {{- $ns := .Release.Namespace}}
 {{- $replicas := int .Values.server.replicas}}
-{{- $linkerd := .Values.server.linkerd}}
+{{- $linkerd := .Values.linkerd}}
+{{- $inject := .Values.server.linkerdInject}}
 {{- range $i, $e := until (.Values.server.services | int) }}
 ---
 apiVersion: v1
@@ -43,7 +44,13 @@ spec:
         role: server
         instance: {{quote $i}}
       annotation:
-        linkerd.io/inject: {{$linkerd.inject}}
+        linkerd.io/inject: {{$inject | default false | ternary "enabled" "disabled" }}
+{{- if $linkerd.proxyImage}}
+        config.linkerd.io/proxy-image: {{$linkerd.proxyImage}}
+{{- end}}
+{{- if $linkerd.proxyVersion}}
+        config.linkerd.io/proxy-version: {{$linkerd.proxyVersion}}
+{{- end}}
     spec:
       containers:
         - name: main
