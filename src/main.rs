@@ -2,122 +2,91 @@
 
 use bytes::BytesMut;
 use futures::prelude::*;
-use std::{env, net::SocketAddr, process};
+use std::net::SocketAddr;
+use structopt::StructOpt;
 use tokio::{
     net::{TcpListener, TcpStream},
     prelude::*,
     time,
 };
-use trust_dns_resolver::{system_conf, AsyncResolver, TokioAsyncResolver};
+use tracing::{debug, info, warn};
+
+#[derive(StructOpt)]
+enum InetNetTest {
+    Client { targets: Vec<Target> },
+    Server { port: u16 },
+}
+
+struct Target(String, u16);
 
 #[tokio::main]
-async fn main() {
-    let mut args = env::args();
-    let _ = args.next().expect("must have at least a program name");
-    match args.next() {
-        Some(ref n) if n == "client" => client(args).await,
-        Some(ref n) if n == "server" => server(args).await,
-        a => {
-            eprintln!("need at least one argument: {:?}", a);
-            usage();
+async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
+    tracing_subscriber::fmt::init();
+    match InetNetTest::from_args() {
+        InetNetTest::Client { targets } => {
+            if targets.is_empty() {
+                return Err(InvalidTarget.into());
+            }
+            client(targets).await;
+        }
+        InetNetTest::Server { port } => {
+            server(port).await;
         }
     }
+
+    Ok(())
 }
 
-fn usage() -> ! {
-    eprintln!("client <host> <port>");
-    eprintln!("server <port>");
-    process::exit(64);
-}
-
-async fn server(mut args: env::Args) {
-    let port = match args.next() {
-        Some(p) => p.parse::<u16>().expect("port must be valid"),
-        None => usage(),
-    };
-    if args.next().is_some() {
-        usage();
-    }
+async fn server(port: u16) {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-
-    let mut server = TcpListener::bind(&addr).await.expect("must bind");
-    let mut incoming = server.incoming();
-
-    while let Some(socket) = incoming.try_next().await.expect("Server failed") {
-        let peer = socket.peer_addr().unwrap();
+    let server = TcpListener::bind(&addr).await.expect("must bind");
+    loop {
+        let (socket, peer) = server.accept().await.expect("Server failed");
         let _ = socket.set_nodelay(true);
         tokio::spawn(async move {
-            println!("Processing connection from {}", peer);
+            info!("Processing connection from {}", peer);
             match serve_conn(socket).await {
-                Ok(sz) => println!("Echoed {}B from {}", sz, peer),
-                Err(e) => eprintln!("Failed to serve connection from {}: {}", peer, e),
+                Ok(sz) => debug!("Echoed {}B from {}", sz, peer),
+                Err(e) => warn!("Failed to serve connection from {}: {}", peer, e),
             }
         });
     }
 }
 
-async fn client(mut args: env::Args) {
-    let host = match args.next() {
-        Some(h) => h,
-        None => usage(),
-    };
-    let port = match args.next() {
-        Some(p) => p.parse::<u16>().expect("port must be valid"),
-        None => usage(),
-    };
-    if args.next().is_some() {
-        usage();
-    }
-
-    let mut resolver = {
-        let (c, mut o) = system_conf::read_system_conf().expect("DNS configuration must be valid");
-        o.cache_size = 0;
-        AsyncResolver::tokio(c, o)
-            .await
-            .expect("DNS resolver must be valid")
-    };
-
-    const BASE_SLEEP: time::Duration = time::Duration::from_secs(10);
+async fn client(targets: Vec<Target>) {
+    const BACKOFF: time::Duration = time::Duration::from_secs(1);
     const MESSAGE: &str = "heya!
 
     how's it going?
     ";
+
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
-    let mut sleep = BASE_SLEEP;
-    loop {
-        sleep = match client_send(&mut resolver, &host, port, MESSAGE, &mut buf).await {
+    for Target(host, port) in targets.iter().cycle() {
+        match client_send(&host, *port, MESSAGE, &mut buf).await {
             Err(e) => {
-                eprintln!("Failed to send message: {}", e);
-                sleep * 2
+                warn!("Failed to send message: {}", e);
+                time::sleep(BACKOFF).await;
             }
             Ok(sz) => {
-                println!(
+                debug!(
                     "Read {}B: {:?}",
                     sz,
                     ::std::str::from_utf8(buf.as_ref()).unwrap()
                 );
-                BASE_SLEEP
             }
         };
         buf.clear();
-
-        time::delay_for(sleep).await;
     }
 }
 
 async fn client_send(
-    resolver: &mut TokioAsyncResolver,
     host: &str,
     port: u16,
     msg: &str,
     buf: &mut BytesMut,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let ips = resolver.lookup_ip(host).await?;
-    let ip = ips.iter().next().expect("must resolve to at least one IP");
-    let addr = SocketAddr::from((ip, port));
-
-    let mut socket = TcpStream::connect(&addr).await?;
-    println!("Connected to {} at {}", host, addr);
+    let mut socket = TcpStream::connect((host, port)).await?;
+    debug!("Connected to {}:{}", host, port);
     socket.write_all(msg.as_bytes()).await?;
     socket.read_buf(buf).err_into().await
 }
@@ -130,3 +99,31 @@ async fn serve_conn(
     socket.write_all(&buf).await?;
     Ok(sz)
 }
+
+// === impl Target ===
+
+impl std::str::FromStr for Target {
+    type Err = Box<dyn std::error::Error + 'static>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uri = http::Uri::from_str(s)?;
+        if let Some("tcp") | None = uri.scheme_str() {
+            if let (Some(h), Some(p)) = (uri.host(), uri.port_u16()) {
+                return Ok(Target(h.to_string(), p));
+            }
+        }
+
+        Err(InvalidTarget.into())
+    }
+}
+
+#[derive(Debug)]
+struct InvalidTarget;
+
+impl std::fmt::Display for InvalidTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid target")
+    }
+}
+
+impl std::error::Error for InvalidTarget {}

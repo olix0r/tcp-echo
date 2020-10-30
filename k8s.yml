@@ -35,7 +35,7 @@ spec:
       containers:
         - name: main
           image: ghcr.io/olix0r/init-net-test:v6
-          args: ["client", "init-net-test-server", "4444"]
+          args: ["client", "init-net-test-server:4444"]
 
 ---
 apiVersion: apps/v1
