@@ -31,6 +31,7 @@ spec:
           image: ghcr.io/olix0r/tcp-echo:v8
           args:
             - client
+            - --concurrency={{.Values.client.concurrency | default 1}}
 {{- range $i, $e := until (.Values.server.services | int) }}
             - {{printf "tcp://echo-%03d:4444" $i}}
 {{- end}}

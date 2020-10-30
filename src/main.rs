@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 #[derive(StructOpt)]
 enum TcpEcho {
     Client {
-        #[structopt(long, short, env)]
+        #[structopt(long, short, env, default_value = "1")]
         concurrency: usize,
         targets: Vec<Target>,
     },
@@ -127,8 +127,8 @@ impl std::str::FromStr for Target {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let uri = http::Uri::from_str(s)?;
         if let Some("tcp") | None = uri.scheme_str() {
-            if let (Some(h), Some(p)) = (uri.host(), uri.port_u16()) {
-                return Ok(Target(h.to_string(), p));
+            if let Some(h) = uri.host() {
+                return Ok(Target(h.to_string(), uri.port_u16().unwrap_or(4444)));
             }
         }
 
