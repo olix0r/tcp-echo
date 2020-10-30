@@ -19,30 +19,6 @@ kind: Deployment
 metadata:
   labels:
     app: init-net-test
-    role: client
-  name: init-net-test-client
-spec:
-  selector:
-    matchLabels:
-      app: init-net-test
-      role: client
-  template:
-    metadata:
-      labels:
-        app: init-net-test
-        role: client
-    spec:
-      containers:
-        - name: main
-          image: ghcr.io/olix0r/init-net-test:v6
-          args: ["client", "init-net-test-server:4444"]
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  labels:
-    app: init-net-test
     role: server
   name: init-net-test-server
 spec:
@@ -58,7 +34,7 @@ spec:
     spec:
       containers:
         - name: main
-          image: ghcr.io/olix0r/init-net-test:v6
+          image: ghcr.io/olix0r/init-net-test:v7
           args: ["server", "4444"]
           ports:
             - containerPort: 4444
