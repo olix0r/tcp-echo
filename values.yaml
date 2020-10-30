@@ -1,0 +1,9 @@
+client:
+  replicas: 1
+  linkerd:
+    inject: enabled
+server:
+  services: 1
+  replicas: 1
+  linkerd:
+    inject: enabled

@@ -1,4 +1,3 @@
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,18 +5,27 @@ metadata:
     app: init-net-test
     role: client
   name: init-net-test-client
+  namespace: {{.Release.Namespace}}
 spec:
   selector:
     matchLabels:
       app: init-net-test
       role: client
+  replicas: {{int .Values.client.replicas}}
   template:
     metadata:
       labels:
         app: init-net-test
         role: client
+      annotation:
+        linkerd.io/inject: {{.Values.client.linkerd.inject}}
     spec:
       containers:
         - name: main
           image: ghcr.io/olix0r/init-net-test:v7
-          args: ["client", "init-net-test-server:4444"]
+          args:
+            - client
+{{- range $i, $e := until (.Values.server.services | int) }}
+            - "tcp://echo-{{$i}}:4444"
+{{- end -}}
+
