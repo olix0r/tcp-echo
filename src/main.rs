@@ -12,7 +12,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 #[derive(StructOpt)]
-enum InetNetTest {
+enum TcpEcho {
     Client { targets: Vec<Target> },
     Server { port: u16 },
 }
@@ -22,14 +22,14 @@ struct Target(String, u16);
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     tracing_subscriber::fmt::init();
-    match InetNetTest::from_args() {
-        InetNetTest::Client { targets } => {
+    match TcpEcho::from_args() {
+        TcpEcho::Client { targets } => {
             if targets.is_empty() {
                 return Err(InvalidTarget.into());
             }
             client(targets).await;
         }
-        InetNetTest::Server { port } => {
+        TcpEcho::Server { port } => {
             server(port).await;
         }
     }

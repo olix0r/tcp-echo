@@ -2,20 +2,20 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: init-net-test
+    app: tcp-echo
     role: client
   name: client
   namespace: {{.Release.Namespace}}
 spec:
   selector:
     matchLabels:
-      app: init-net-test
+      app: tcp-echo
       role: client
   replicas: {{int .Values.client.replicas}}
   template:
     metadata:
       labels:
-        app: init-net-test
+        app: tcp-echo
         role: client
       annotations:
         linkerd.io/inject: {{.Values.client.linkerdInject | default false | ternary "enabled" "disabled" }}
@@ -28,7 +28,7 @@ spec:
     spec:
       containers:
         - name: main
-          image: ghcr.io/olix0r/init-net-test:v7
+          image: ghcr.io/olix0r/tcp-echo:v7
           args:
             - client
 {{- range $i, $e := until (.Values.server.services | int) }}
