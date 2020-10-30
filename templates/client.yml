@@ -32,6 +32,6 @@ spec:
           args:
             - client
 {{- range $i, $e := until (.Values.server.services | int) }}
-            - "tcp://echo-{{$i}}:4444"
+            - {{printf "tcp://echo-%03d:4444" $i}}
 {{- end}}
 

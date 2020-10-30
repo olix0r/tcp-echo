@@ -9,7 +9,7 @@ kind: Service
 metadata:
   labels:
     app: init-net-test
-  name: echo-{{$i}}
+  name: echo-{{printf "%03d" $i}}
   namespace: {{$ns}}
 spec:
   selector:
@@ -28,7 +28,7 @@ metadata:
     app: init-net-test
     role: server
     instance: {{quote $i}}
-  name: server-{{$i}}
+  name: server-{{printf "%03d" $i}}
   namespace: {{$ns}}
 spec:
   selector:
