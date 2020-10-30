@@ -2,37 +2,54 @@
 
 use bytes::BytesMut;
 use futures::prelude::*;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::{
     net::{TcpListener, TcpStream},
     prelude::*,
+    signal::unix::{signal, SignalKind},
     time,
 };
 use tracing::{debug, info, warn};
 
 #[derive(StructOpt)]
 enum TcpEcho {
-    Client { targets: Vec<Target> },
-    Server { port: u16 },
+    Client {
+        #[structopt(long, short, env)]
+        concurrency: usize,
+        targets: Vec<Target>,
+    },
+    Server {
+        port: u16,
+    },
 }
 
+#[derive(Clone)]
 struct Target(String, u16);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     tracing_subscriber::fmt::init();
     match TcpEcho::from_args() {
-        TcpEcho::Client { targets } => {
+        TcpEcho::Client {
+            concurrency,
+            targets,
+        } => {
             if targets.is_empty() {
                 return Err(InvalidTarget.into());
             }
-            client(targets).await;
+            let rng = SmallRng::from_entropy();
+            for _ in 0..concurrency.min(1) {
+                tokio::spawn(client(targets.clone(), rng.clone()));
+            }
         }
         TcpEcho::Server { port } => {
-            server(port).await;
+            tokio::spawn(server(port));
         }
     }
+
+    signal(SignalKind::terminate())?.recv().await;
 
     Ok(())
 }
@@ -53,7 +70,7 @@ async fn server(port: u16) {
     }
 }
 
-async fn client(targets: Vec<Target>) {
+async fn client(targets: Vec<Target>, mut rng: SmallRng) {
     const BACKOFF: time::Duration = time::Duration::from_secs(1);
     const MESSAGE: &str = "heya!
 
@@ -61,8 +78,10 @@ async fn client(targets: Vec<Target>) {
     ";
 
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
-    for Target(host, port) in targets.iter().cycle() {
-        match client_send(&host, *port, MESSAGE, &mut buf).await {
+    loop {
+        let i = rng.gen::<usize>();
+        let Target(ref host, port) = targets[i % targets.len()];
+        match client_send(host, port, MESSAGE, &mut buf).await {
             Err(e) => {
                 warn!("Failed to send message: {}", e);
                 time::sleep(BACKOFF).await;
