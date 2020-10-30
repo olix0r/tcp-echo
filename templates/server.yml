@@ -43,7 +43,7 @@ spec:
         app: init-net-test
         role: server
         instance: {{quote $i}}
-      annotation:
+      annotations:
         linkerd.io/inject: {{$inject | default false | ternary "enabled" "disabled" }}
 {{- if $linkerd.proxyImage}}
         config.linkerd.io/proxy-image: {{$linkerd.proxyImage}}
