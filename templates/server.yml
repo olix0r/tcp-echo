@@ -54,7 +54,7 @@ spec:
     spec:
       containers:
         - name: main
-          image: ghcr.io/olix0r/tcp-echo:v7
+          image: ghcr.io/olix0r/tcp-echo:v8
           args: ["server", "4444"]
           ports:
             - containerPort: 4444
