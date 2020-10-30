@@ -7,6 +7,6 @@ server:
   replicas: 1
   linkerdInject: true
 
-linkerd:
+linkerd: {}
   #proxyImage: ...
   #proxyVersion: ...
