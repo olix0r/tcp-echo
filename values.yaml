@@ -10,6 +10,7 @@ server:
   services: 1
   replicas: 1
   linkerdInject: true
+  opaque: false
 
 linkerd: {}
   #proxyImage: ...

@@ -3,6 +3,7 @@
 {{- $replicas := int .Values.server.replicas }}
 {{- $linkerd := .Values.linkerd }}
 {{- $inject := .Values.server.linkerdInject }}
+{{- $opaque := .Values.server.opaque }}
 {{- $reverse := .Values.reverse }}
 {{- range $i, $e := until (int .Values.server.services) }}
 ---
@@ -52,6 +53,9 @@ spec:
         {{- end }}
         {{- if $linkerd.proxyVersion }}
         config.linkerd.io/proxy-version: {{ $linkerd.proxyVersion }}
+        {{- end }}
+        {{- if or $reverse $opaque }}
+        config.linkerd.io/opaque-ports: "4444"
         {{- end }}
     spec:
       containers:
