@@ -5,13 +5,13 @@ metadata:
     app: tcp-echo
     role: client
   name: client
-  namespace: {{.Release.Namespace}}
+  namespace: {{ .Release.Namespace }}
 spec:
   selector:
     matchLabels:
       app: tcp-echo
       role: client
-  replicas: {{int .Values.client.replicas}}
+  replicas: {{ int .Values.client.replicas }}
   template:
     metadata:
       labels:
@@ -19,20 +19,24 @@ spec:
         role: client
       annotations:
         linkerd.io/inject: {{.Values.client.linkerdInject | default false | ternary "enabled" "disabled" }}
-{{- if .Values.linkerd.proxyImage}}
-        config.linkerd.io/proxy-image: {{.Values.linkerd.proxyImage}}
-{{- end}}
-{{- if .Values.linkerd.proxyVersion}}
-        config.linkerd.io/proxy-version: {{.Values.linkerd.proxyVersion}}
-{{- end}}
+        {{- if .Values.linkerd.proxyImage }}
+        config.linkerd.io/proxy-image: {{ .Values.linkerd.proxyImage }}
+        {{- end }}
+        {{- if .Values.linkerd.proxyVersion }}
+        config.linkerd.io/proxy-version: {{ .Values.linkerd.proxyVersion }}
+        {{- end }}
     spec:
       containers:
         - name: main
-          image: ghcr.io/olix0r/tcp-echo:v8
+          image: {{ .Values.image }}
+          env:
+            - name: RUST_LOG
+              value: debug
           args:
             - client
             - --concurrency={{.Values.client.concurrency | default 1}}
-{{- range $i, $e := until (.Values.server.services | int) }}
+            - --reverse={{ .Values.reverse }}
+            {{- range $i, $e := until (.Values.server.services | int) }}
             - {{printf "tcp://echo-%03d:4444" $i}}
-{{- end}}
+            {{- end }}
 

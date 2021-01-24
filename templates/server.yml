@@ -1,16 +1,19 @@
-{{- $ns := .Release.Namespace}}
-{{- $replicas := int .Values.server.replicas}}
-{{- $linkerd := .Values.linkerd}}
-{{- $inject := .Values.server.linkerdInject}}
-{{- range $i, $e := until (.Values.server.services | int) }}
+{{- $ns := .Release.Namespace }}
+{{- $image := .Values.image }}
+{{- $replicas := int .Values.server.replicas }}
+{{- $linkerd := .Values.linkerd }}
+{{- $inject := .Values.server.linkerdInject }}
+{{- $opaque := .Values.server.opaque }}
+{{- $reverse := .Values.reverse }}
+{{- range $i, $e := until (int .Values.server.services) }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   labels:
     app: tcp-echo
-  name: echo-{{printf "%03d" $i}}
-  namespace: {{$ns}}
+  name: echo-{{ printf "%03d" $i }}
+  namespace: {{ $ns }}
 spec:
   selector:
     app: tcp-echo
@@ -27,37 +30,46 @@ metadata:
   labels:
     app: tcp-echo
     role: server
-    instance: {{quote $i}}
-  name: server-{{printf "%03d" $i}}
-  namespace: {{$ns}}
+    instance: {{ quote $i }}
+  name: server-{{ printf "%03d" $i }}
+  namespace: {{ $ns }}
 spec:
   selector:
     matchLabels:
       app: tcp-echo
       role: server
       instance: {{quote $i}}
-  replicas: {{$replicas}}
+  replicas: {{ $replicas }}
   template:
     metadata:
       labels:
         app: tcp-echo
         role: server
-        instance: {{quote $i}}
+        instance: {{ quote $i }}
       annotations:
-        linkerd.io/inject: {{$inject | default false | ternary "enabled" "disabled" }}
-{{- if $linkerd.proxyImage}}
-        config.linkerd.io/proxy-image: {{$linkerd.proxyImage}}
-{{- end}}
-{{- if $linkerd.proxyVersion}}
-        config.linkerd.io/proxy-version: {{$linkerd.proxyVersion}}
-{{- end}}
+        linkerd.io/inject: {{ $inject | default false | ternary "enabled" "disabled" }}
+        {{- if $linkerd.proxyImage }}
+        config.linkerd.io/proxy-image: {{ $linkerd.proxyImage }}
+        {{- end }}
+        {{- if $linkerd.proxyVersion }}
+        config.linkerd.io/proxy-version: {{ $linkerd.proxyVersion }}
+        {{- end }}
+        {{- if or $reverse $opaque }}
+        config.linkerd.io/opaque-ports: "4444"
+        {{- end }}
     spec:
       containers:
         - name: main
-          image: ghcr.io/olix0r/tcp-echo:v8
-          args: ["server", "4444"]
+          image: {{ $image }}
+          env:
+            - name: RUST_LOG
+              value: debug
+          args:
+            - server
+            - "4444"
+            - --reverse={{ $reverse }}
           ports:
             - containerPort: 4444
               protocol: TCP
               name: echo
-{{- end -}}
+{{- end }}
