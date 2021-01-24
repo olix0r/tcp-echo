@@ -6,8 +6,8 @@ use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::net::SocketAddr;
 use structopt::StructOpt;
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    prelude::*,
     signal::unix::{signal, SignalKind},
     time,
 };
