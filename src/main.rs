@@ -8,7 +8,10 @@ use structopt::StructOpt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    signal::unix::{signal, SignalKind},
+    signal::{
+        ctrl_c,
+        unix::{signal, SignalKind},
+    },
     time,
 };
 use tracing::{debug, info, warn};
@@ -59,7 +62,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         }
     }
 
-    signal(SignalKind::terminate())?.recv().await;
+    let mut term = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = term.recv() => {}
+        res = ctrl_c() => res?,
+    }
 
     Ok(())
 }
