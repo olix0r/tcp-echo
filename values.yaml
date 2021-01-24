@@ -1,3 +1,7 @@
+image: ghcr.io/olix0r/tcp-echo:v8
+
+reverse: false
+
 client:
   replicas: 1
   linkerdInject: true

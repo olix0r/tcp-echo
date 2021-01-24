@@ -13,14 +13,23 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+const MESSAGE: &str = "heya!
+
+how's it going?
+";
+
 #[derive(StructOpt)]
 enum TcpEcho {
     Client {
         #[structopt(long, short, env, default_value = "1")]
         concurrency: usize,
+        #[structopt(long, short = "R")]
+        reverse: bool,
         targets: Vec<Target>,
     },
     Server {
+        #[structopt(long, short = "R")]
+        reverse: bool,
         port: u16,
     },
 }
@@ -34,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     match TcpEcho::from_args() {
         TcpEcho::Client {
             concurrency,
+            reverse,
             targets,
         } => {
             if targets.is_empty() {
@@ -41,11 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             }
             let rng = SmallRng::from_entropy();
             for _ in 0..concurrency.min(1) {
-                tokio::spawn(client(targets.clone(), rng.clone()));
+                tokio::spawn(client(targets.clone(), reverse, rng.clone()));
             }
         }
-        TcpEcho::Server { port } => {
-            tokio::spawn(server(port));
+        TcpEcho::Server { reverse, port } => {
+            tokio::spawn(server(reverse, port));
         }
     }
 
@@ -54,68 +64,121 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     Ok(())
 }
 
-async fn server(port: u16) {
+async fn server(reverse: bool, port: u16) {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let server = TcpListener::bind(&addr).await.expect("must bind");
     loop {
-        let (socket, peer) = server.accept().await.expect("Server failed");
+        let (mut socket, client) = server.accept().await.expect("Server failed");
         let _ = socket.set_nodelay(true);
         tokio::spawn(async move {
-            info!("Processing connection from {}", peer);
-            match serve_conn(socket).await {
-                Ok(sz) => debug!("Echoed {}B from {}", sz, peer),
-                Err(e) => warn!("Failed to serve connection from {}: {}", peer, e),
+            info!(%client, reverse, "Accepted connection");
+            let mut buf = BytesMut::with_capacity(1024);
+            if reverse {
+                match write_read(&mut socket, MESSAGE, &mut buf).await {
+                    Err(error) => warn!(%client, %error, "Failed to send message"),
+                    Ok(sz) => {
+                        debug!(
+                            %client,
+                            "Read {}B: {:?}",
+                            sz,
+                            std::str::from_utf8(buf.as_ref()).unwrap()
+                        );
+                    }
+                }
+            } else {
+                loop {
+                    match read_write(&mut socket, &mut buf).await {
+                        Ok(0) => {
+                            debug!(%client, "Closed");
+                            return;
+                        }
+                        Ok(sz) => {
+                            debug!(%client, "Echoed {}B", sz);
+                            buf.clear();
+                        }
+                        Err(error) => {
+                            warn!(%client, %error);
+                            return;
+                        }
+                    }
+                }
             }
         });
     }
 }
 
-async fn client(targets: Vec<Target>, mut rng: SmallRng) {
+async fn client(targets: Vec<Target>, reverse: bool, mut rng: SmallRng) {
     const BACKOFF: time::Duration = time::Duration::from_secs(1);
-    const MESSAGE: &str = "heya!
-
-    how's it going?
-    ";
 
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
     loop {
         let i = rng.gen::<usize>();
         let Target(ref host, port) = targets[i % targets.len()];
-        match client_send(host, port, MESSAGE, &mut buf).await {
-            Err(e) => {
-                warn!("Failed to send message: {}", e);
+        match TcpStream::connect((host.as_str(), port)).await {
+            Err(error) => {
+                warn!(%error, "Failed to connect");
                 time::sleep(BACKOFF).await;
             }
-            Ok(sz) => {
-                debug!(
-                    "Read {}B: {:?}",
-                    sz,
-                    ::std::str::from_utf8(buf.as_ref()).unwrap()
-                );
+            Ok(mut socket) => {
+                debug!(reverse, "Connected to {}:{}", host, port);
+                if reverse {
+                    loop {
+                        match read_write(&mut socket, &mut buf).await {
+                            Ok(0) => {
+                                debug!(%host, port, "Closed");
+                                break;
+                            }
+                            Ok(sz) => {
+                                debug!(%host, port, "Echoed {}B", sz);
+                                buf.clear();
+                            }
+                            Err(error) => {
+                                warn!(%host, port, %error);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    match write_read(&mut socket, MESSAGE, &mut buf).await {
+                        Err(error) => {
+                            warn!(%error, "Failed to send message");
+                            time::sleep(BACKOFF).await;
+                        }
+                        Ok(sz) => {
+                            debug!(
+                                %host,
+                                port,
+                                "Read {}B: {:?}",
+                                sz,
+                                std::str::from_utf8(buf.as_ref()).unwrap()
+                            );
+                        }
+                    }
+                }
             }
         };
         buf.clear();
     }
 }
 
-async fn client_send(
-    host: &str,
-    port: u16,
+async fn write_read(
+    socket: &mut TcpStream,
     msg: &str,
     buf: &mut BytesMut,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let mut socket = TcpStream::connect((host, port)).await?;
-    debug!("Connected to {}:{}", host, port);
     socket.write_all(msg.as_bytes()).await?;
     socket.read_buf(buf).err_into().await
 }
 
-async fn serve_conn(
-    mut socket: TcpStream,
+async fn read_write(
+    socket: &mut TcpStream,
+    buf: &mut BytesMut,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let mut buf = [0u8; 1024 * 8];
-    let sz = socket.read(&mut buf).await?;
-    socket.write_all(&buf).await?;
+    let sz = socket.read_buf(buf).await?;
+    let mut remaining = sz;
+    while remaining != 0 {
+        remaining -= socket.write_buf(buf).await?;
+    }
     Ok(sz)
 }
 
