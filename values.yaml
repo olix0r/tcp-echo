@@ -1,4 +1,4 @@
-image: ghcr.io/olix0r/tcp-echo:v8
+image: ghcr.io/olix0r/tcp-echo:v9
 
 reverse: false
 
