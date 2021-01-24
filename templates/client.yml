@@ -29,6 +29,9 @@ spec:
       containers:
         - name: main
           image: {{ .Values.image }}
+          env:
+            - name: RUST_LOG
+              value: debug
           args:
             - client
             - --concurrency={{.Values.client.concurrency | default 1}}
