@@ -34,8 +34,6 @@ deny = []
 skip = [
     # Pulled in by clap
     { name = "ansi_term", version = "0.11.0" },
-    # Pulled in by log v0.4.13
-    { name = "cfg-if", version = "0.1.10" },
 ]
 skip-tree = []
 
