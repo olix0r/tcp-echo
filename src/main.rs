@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                 return Err(InvalidTarget.into());
             }
             let rng = SmallRng::from_entropy();
-            for id in 0..concurrency.min(1) {
+            for id in 0..concurrency.max(1) {
                 tokio::spawn(
                     client(
                         targets.clone(),
