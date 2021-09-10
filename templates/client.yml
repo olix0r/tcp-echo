@@ -35,7 +35,9 @@ spec:
           args:
             - client
             - --concurrency={{.Values.client.concurrency | default 1}}
-            - --reverse={{ .Values.reverse }}
+            {{- if .Values.reverse }}
+            - --reverse
+            {{- end }}
             {{- range $i, $e := until (.Values.server.services | int) }}
             - {{printf "tcp://echo-%03d:4444" $i}}
             {{- end }}

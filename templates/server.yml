@@ -67,7 +67,9 @@ spec:
           args:
             - server
             - "4444"
-            - --reverse={{ $reverse }}
+            {{- if .Values.reverse }}
+            - --reverse
+            {{- end }}
           ports:
             - containerPort: 4444
               protocol: TCP
