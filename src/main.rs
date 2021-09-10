@@ -14,7 +14,7 @@ use tokio::{
     },
     time,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, info_span, warn, Instrument};
 
 const MESSAGE: &str = "heya!
 
@@ -56,13 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                 return Err(InvalidTarget.into());
             }
             let rng = SmallRng::from_entropy();
-            for _ in 0..concurrency.min(1) {
-                tokio::spawn(client(
-                    targets.clone(),
-                    messages_per_connection,
-                    reverse,
-                    rng.clone(),
-                ));
+            for id in 0..concurrency.min(1) {
+                tokio::spawn(
+                    client(
+                        targets.clone(),
+                        messages_per_connection,
+                        reverse,
+                        rng.clone(),
+                    )
+                    .instrument(info_span!("worker", %id)),
+                );
             }
         }
         TcpEcho::Server { reverse, port } => {
@@ -146,6 +149,7 @@ async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: Smal
                             }
                             Ok(sz) => {
                                 debug!(%host, port, "Echoed {}B", sz);
+                                tokio::task::yield_now().await;
                             }
                             Err(error) => {
                                 warn!(%host, port, %error);
@@ -164,6 +168,7 @@ async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: Smal
                                 time::sleep(BACKOFF).await;
                             }
                             Ok(sz) => {
+                                tokio::task::yield_now().await;
                                 debug!(
                                     %n,
                                     %host,
