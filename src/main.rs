@@ -26,6 +26,8 @@ enum TcpEcho {
     Client {
         #[structopt(long, short, env, default_value = "1")]
         concurrency: usize,
+        #[structopt(long, short, env, default_value = "1")]
+        messages_per_connection: usize,
         #[structopt(long, short = "R")]
         reverse: bool,
         targets: Vec<Target>,
@@ -46,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     match TcpEcho::from_args() {
         TcpEcho::Client {
             concurrency,
+            messages_per_connection,
             reverse,
             targets,
         } => {
@@ -54,7 +57,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             }
             let rng = SmallRng::from_entropy();
             for _ in 0..concurrency.min(1) {
-                tokio::spawn(client(targets.clone(), reverse, rng.clone()));
+                tokio::spawn(client(
+                    targets.clone(),
+                    messages_per_connection,
+                    reverse,
+                    rng.clone(),
+                ));
             }
         }
         TcpEcho::Server { reverse, port } => {
@@ -114,7 +122,7 @@ async fn server(reverse: bool, port: u16) {
     }
 }
 
-async fn client(targets: Vec<Target>, reverse: bool, mut rng: SmallRng) {
+async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: SmallRng) {
     const BACKOFF: time::Duration = time::Duration::from_secs(1);
 
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
@@ -130,6 +138,7 @@ async fn client(targets: Vec<Target>, reverse: bool, mut rng: SmallRng) {
                 debug!(reverse, "Connected to {}:{}", host, port);
                 if reverse {
                     loop {
+                        buf.clear();
                         match read_write(&mut socket, &mut buf).await {
                             Ok(0) => {
                                 debug!(%host, port, "Closed");
@@ -137,7 +146,6 @@ async fn client(targets: Vec<Target>, reverse: bool, mut rng: SmallRng) {
                             }
                             Ok(sz) => {
                                 debug!(%host, port, "Echoed {}B", sz);
-                                buf.clear();
                             }
                             Err(error) => {
                                 warn!(%host, port, %error);
@@ -146,25 +154,33 @@ async fn client(targets: Vec<Target>, reverse: bool, mut rng: SmallRng) {
                         }
                     }
                 } else {
-                    match write_read(&mut socket, MESSAGE, &mut buf).await {
-                        Err(error) => {
-                            warn!(%error, "Failed to send message");
-                            time::sleep(BACKOFF).await;
+                    let mut n = 0;
+                    loop {
+                        n += 1;
+                        buf.clear();
+                        match write_read(&mut socket, MESSAGE, &mut buf).await {
+                            Err(error) => {
+                                warn!(%error, "Failed to send message");
+                                time::sleep(BACKOFF).await;
+                            }
+                            Ok(sz) => {
+                                debug!(
+                                    %n,
+                                    %host,
+                                    port,
+                                    "Read {}B: {:?}",
+                                    sz,
+                                    std::str::from_utf8(buf.as_ref()).unwrap()
+                                );
+                            }
                         }
-                        Ok(sz) => {
-                            debug!(
-                                %host,
-                                port,
-                                "Read {}B: {:?}",
-                                sz,
-                                std::str::from_utf8(buf.as_ref()).unwrap()
-                            );
+                        if n == limit {
+                            break;
                         }
                     }
                 }
             }
         };
-        buf.clear();
     }
 }
 

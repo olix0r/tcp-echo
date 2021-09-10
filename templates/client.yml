@@ -35,6 +35,7 @@ spec:
           args:
             - client
             - --concurrency={{.Values.client.concurrency | default 1}}
+            - --messages-per-connection={{.Values.client.messagesPerConnection | default 1}}
             {{- if .Values.reverse }}
             - --reverse
             {{- end }}

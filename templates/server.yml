@@ -67,7 +67,7 @@ spec:
           args:
             - server
             - "4444"
-            {{- if .Values.reverse }}
+            {{- if $reverse }}
             - --reverse
             {{- end }}
           ports:

@@ -1,10 +1,12 @@
-image: ghcr.io/olix0r/tcp-echo:v11
+image: ghcr.io/olix0r/tcp-echo:v12
 
 reverse: false
 
 client:
   replicas: 1
-  linkerdInject: true
+  concurrency: 6000
+  messagesPerConnection: 100000
+  linkerdInject: false
 
 server:
   services: 1
