@@ -1,10 +1,10 @@
 #![deny(warnings, rust_2018_idioms)]
 
 use bytes::BytesMut;
+use clap::Parser;
 use futures::prelude::*;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::net::SocketAddr;
-use structopt::StructOpt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -21,19 +21,25 @@ const MESSAGE: &str = "heya!
 how's it going?
 ";
 
-#[derive(StructOpt)]
-enum TcpEcho {
+#[derive(clap::Parser)]
+struct TcpEcho {
+    #[clap(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(clap::Subcommand)]
+enum Cmd {
     Client {
-        #[structopt(long, short, env, default_value = "1")]
+        #[clap(long, short, env, default_value = "1")]
         concurrency: usize,
-        #[structopt(long, short, env, default_value = "1")]
+        #[clap(long, short, env, default_value = "1")]
         messages_per_connection: usize,
-        #[structopt(long, short = "R")]
+        #[clap(long, short = 'R')]
         reverse: bool,
         targets: Vec<Target>,
     },
     Server {
-        #[structopt(long, short = "R")]
+        #[clap(long, short = 'R')]
         reverse: bool,
         port: u16,
     },
@@ -45,15 +51,15 @@ struct Target(String, u16);
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     tracing_subscriber::fmt::init();
-    match TcpEcho::from_args() {
-        TcpEcho::Client {
+    match TcpEcho::parse().cmd {
+        Cmd::Client {
             concurrency,
             messages_per_connection,
             reverse,
             targets,
         } => {
             if targets.is_empty() {
-                return Err(InvalidTarget.into());
+                return Err(InvalidTarget::Empty.into());
             }
             let rng = SmallRng::from_entropy();
             for id in 0..concurrency.max(1) {
@@ -68,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                 );
             }
         }
-        TcpEcho::Server { reverse, port } => {
+        Cmd::Server { reverse, port } => {
             tokio::spawn(server(reverse, port));
         }
     }
@@ -213,27 +219,32 @@ async fn read_write(
 // === impl Target ===
 
 impl std::str::FromStr for Target {
-    type Err = Box<dyn std::error::Error + 'static>;
+    type Err = InvalidTarget;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let uri = http::Uri::from_str(s)?;
-        if let Some("tcp") | None = uri.scheme_str() {
-            if let Some(h) = uri.host() {
-                return Ok(Target(h.to_string(), uri.port_u16().unwrap_or(4444)));
-            }
+        match uri.scheme_str() {
+            Some("tcp") | None => {}
+            Some(s) => return Err(InvalidTarget::Scheme(s.to_string())),
         }
 
-        Err(InvalidTarget.into())
+        let host = match uri.host() {
+            Some(h) => h.to_string(),
+            None => return Err(InvalidTarget::MissingHost),
+        };
+
+        Ok(Target(host, uri.port_u16().unwrap_or(4444)))
     }
 }
 
-#[derive(Debug)]
-struct InvalidTarget;
-
-impl std::fmt::Display for InvalidTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid target")
-    }
+#[derive(Debug, thiserror::Error)]
+enum InvalidTarget {
+    #[error("invalid scheme: {0}")]
+    Scheme(String),
+    #[error("missing host")]
+    MissingHost,
+    #[error("invalid uri: {0}")]
+    Uri(#[from] http::uri::InvalidUri),
+    #[error("no targets specified")]
+    Empty,
 }
-
-impl std::error::Error for InvalidTarget {}
