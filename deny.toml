@@ -15,26 +15,23 @@ ignore = []
 
 [licenses]
 unlicensed = "deny"
-allow = [
-    "Apache-2.0",
-    "MIT",
-]
+allow = ["Apache-2.0", "MIT"]
 deny = []
 copyleft = "deny"
 allow-osi-fsf-free = "neither"
 default = "deny"
 confidence-threshold = 0.8
-exceptions = []
+
+[[licenses.exceptions]]
+allow = ["Unicode-DFS-2016"]
+name = "unicode-ident"
 
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
 deny = []
-skip = [
-    # Pulled in by clap
-    { name = "ansi_term", version = "0.11.0" },
-]
+skip = []
 skip-tree = []
 
 [sources]
