@@ -13,7 +13,7 @@ use tokio::{
     },
     time,
 };
-use tracing::{debug, info, info_span, warn, Instrument};
+use tracing::{debug, error, info, info_span, warn, Instrument};
 
 const MESSAGE: &str = "heya!
 
@@ -45,7 +45,10 @@ enum Cmd {
 }
 
 #[derive(Clone)]
-struct Target(String, u16);
+enum Target {
+    Dns(String, u16),
+    Addr(SocketAddr),
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -88,24 +91,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 }
 
 async fn server(reverse: bool, port: u16) {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let server = TcpListener::bind(&addr).await.expect("must bind");
+    let listen = match TcpListener::bind(SocketAddr::new(
+        std::net::Ipv6Addr::UNSPECIFIED.into(),
+        port,
+    ))
+    .await
+    {
+        Ok(lis) => lis,
+        Err(error) => {
+            warn!(%error, "failed to bind IPv6 socket");
+            match TcpListener::bind(SocketAddr::new(
+                std::net::Ipv6Addr::UNSPECIFIED.into(),
+                port,
+            ))
+            .await
+            {
+                Ok(lis) => lis,
+                Err(error) => {
+                    error!(%error, "failed to bind IPv4 socket");
+                    return;
+                }
+            }
+        }
+    };
+
     loop {
-        let (socket, client) = server.accept().await.expect("Server failed");
-        let _ = socket.set_nodelay(true);
+        let (socket, client) = match listen.accept().await {
+            Ok(conn) => conn,
+            Err(error) => {
+                warn!(%error, "Failed to accept connection");
+                continue;
+            }
+        };
+        let server_addr = match socket.local_addr() {
+            Ok(a) => a,
+            Err(error) => {
+                warn!(%error, "Failed to obtain local socket address");
+                continue;
+            }
+        };
+        if let Err(error) = socket.set_nodelay(true) {
+            warn!(%error, "Failed to set TCP_NODELAY");
+            continue;
+        }
         tokio::spawn(
             async move {
                 if let Err(error) = serve_conn(socket, MESSAGE.as_bytes(), reverse).await {
                     warn!(%error, "Connection failed");
                 }
             }
-            .instrument(info_span!("conn", client.addr = %client)),
+            .instrument(info_span!("conn", server.addr = %server_addr, client.addr = %client)),
         );
     }
 }
 
 async fn serve_conn(mut socket: TcpStream, msg: &[u8], reverse: bool) -> std::io::Result<()> {
     info!("Accepted");
+    let mut n = 0;
     let mut buf = BytesMut::with_capacity(1024);
     loop {
         let sz = if reverse {
@@ -117,6 +159,8 @@ async fn serve_conn(mut socket: TcpStream, msg: &[u8], reverse: bool) -> std::io
             debug!("Closed");
             return Ok(());
         }
+        n += 1;
+        debug!(%n);
         buf.clear()
     }
 }
@@ -127,31 +171,48 @@ async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: Smal
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
     loop {
         let i = rng.gen::<usize>();
-        let t = &targets[i % targets.len()];
-        let span = info_span!("conn", server.addr = %t);
-        if let Err(error) = target_client(t, &mut buf, limit, reverse)
+        let target = &targets[i % targets.len()];
+        let span = info_span!("conn", server.addr = %target);
+        let socket = match target.connect().instrument(span.clone()).await {
+            Ok(socket) => socket,
+            Err(error) => {
+                warn!(parent: &span, %error, "Connection failed");
+                time::sleep(BACKOFF).await;
+                continue;
+            }
+        };
+        let client_addr = match socket.local_addr() {
+            Ok(a) => a,
+            Err(error) => {
+                warn!(parent: &span, %error, "Failed to obtain local socket address");
+                time::sleep(BACKOFF).await;
+                continue;
+            }
+        };
+        let span = info_span!("conn", server.addr = %target, client.addr = %client_addr);
+        debug!(parent: &span, "Connected");
+
+        if let Err(error) = target_client(socket, &mut buf, limit, reverse)
             .instrument(span.clone())
             .await
         {
-            span.in_scope(move || warn!(%error, "Failed to connect"));
+            warn!(parent: &span, %error, "Connection closed");
             time::sleep(BACKOFF).await;
         }
     }
 }
 
 async fn target_client(
-    Target(host, port): &Target,
+    mut socket: TcpStream,
     buf: &mut BytesMut,
     limit: usize,
     reverse: bool,
 ) -> std::io::Result<()> {
-    let mut socket = TcpStream::connect((host.as_str(), *port)).await?;
-    debug!("Connected");
-
     let mut n = 0;
     loop {
         n += 1;
-        debug!(%n, %limit, "Echoing");
+        debug!(%n);
+
         buf.clear();
         let sz = if reverse {
             read_write(&mut socket, buf).await?
@@ -167,7 +228,6 @@ async fn target_client(
             debug!("Completed");
             return Ok(());
         }
-
         tokio::task::yield_now().await;
     }
 }
@@ -202,6 +262,15 @@ async fn read_write(socket: &mut TcpStream, buf: &mut BytesMut) -> std::io::Resu
 
 // === impl Target ===
 
+impl Target {
+    async fn connect(&self) -> std::io::Result<TcpStream> {
+        match self {
+            Self::Addr(addr) => TcpStream::connect(addr).await,
+            Self::Dns(ref host, port) => TcpStream::connect((host.as_str(), *port)).await,
+        }
+    }
+}
+
 impl std::str::FromStr for Target {
     type Err = InvalidTarget;
 
@@ -212,18 +281,26 @@ impl std::str::FromStr for Target {
             Some(s) => return Err(InvalidTarget::Scheme(s.to_string())),
         }
 
-        let host = match uri.host() {
-            Some(h) => h.to_string(),
-            None => return Err(InvalidTarget::MissingHost),
+        let port = uri.port_u16().unwrap_or(4444);
+        let host = uri
+            .host()
+            .ok_or(InvalidTarget::MissingHost)?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let target = match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => Target::Addr(SocketAddr::new(ip, port)),
+            Err(_) => Target::Dns(host.to_string(), port),
         };
-
-        Ok(Target(host, uri.port_u16().unwrap_or(4444)))
+        Ok(target)
     }
 }
 
 impl std::fmt::Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.0, self.1)
+        match self {
+            Self::Addr(addr) => write!(f, "{}", addr),
+            Self::Dns(h, p) => write!(f, "{}:{}", h, p),
+        }
     }
 }
 
