@@ -192,12 +192,10 @@ async fn client(
 
     let mut buf = BytesMut::with_capacity(BUFSIZE);
     loop {
-        let target = {
-            let i = rng.gen::<usize>();
-            &targets[i % targets.len()]
-        };
+        let target = &targets[rng.gen_range(0..targets.len())];
         let span = info_span!("conn", server.addr = %target);
 
+        debug!(parent: &span, "Connecting");
         let socket = match target.connect().instrument(span.clone()).await {
             Ok(socket) => socket,
             Err(error) => {
