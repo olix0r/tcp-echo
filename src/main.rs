@@ -2,7 +2,6 @@
 
 use bytes::BytesMut;
 use clap::Parser;
-use futures::prelude::*;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::net::SocketAddr;
 use tokio::{
@@ -92,42 +91,33 @@ async fn server(reverse: bool, port: u16) {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let server = TcpListener::bind(&addr).await.expect("must bind");
     loop {
-        let (mut socket, client) = server.accept().await.expect("Server failed");
+        let (socket, client) = server.accept().await.expect("Server failed");
         let _ = socket.set_nodelay(true);
-        tokio::spawn(async move {
-            info!(%client, reverse, "Accepted connection");
-            let mut buf = BytesMut::with_capacity(1024);
-            if reverse {
-                match write_read(&mut socket, MESSAGE, &mut buf).await {
-                    Err(error) => warn!(%client, %error, "Failed to send message"),
-                    Ok(sz) => {
-                        debug!(
-                            %client,
-                            "Read {}B: {:?}",
-                            sz,
-                            std::str::from_utf8(buf.as_ref()).unwrap()
-                        );
-                    }
-                }
-            } else {
-                loop {
-                    match read_write(&mut socket, &mut buf).await {
-                        Ok(0) => {
-                            debug!(%client, "Closed");
-                            return;
-                        }
-                        Ok(sz) => {
-                            debug!(%client, "Echoed {}B", sz);
-                            buf.clear();
-                        }
-                        Err(error) => {
-                            warn!(%client, %error);
-                            return;
-                        }
-                    }
+        tokio::spawn(
+            async move {
+                if let Err(error) = serve_conn(socket, MESSAGE.as_bytes(), reverse).await {
+                    warn!(%error, "Connection failed");
                 }
             }
-        });
+            .instrument(info_span!("conn", client.addr = %client)),
+        );
+    }
+}
+
+async fn serve_conn(mut socket: TcpStream, msg: &[u8], reverse: bool) -> std::io::Result<()> {
+    info!("Accepted");
+    let mut buf = BytesMut::with_capacity(1024);
+    loop {
+        let sz = if reverse {
+            write_read(&mut socket, &mut buf, msg).await?
+        } else {
+            read_write(&mut socket, &mut buf).await?
+        };
+        if sz == 0 {
+            debug!("Closed");
+            return Ok(());
+        }
+        buf.clear()
     }
 }
 
@@ -137,83 +127,77 @@ async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: Smal
     let mut buf = BytesMut::with_capacity(MESSAGE.len());
     loop {
         let i = rng.gen::<usize>();
-        let Target(ref host, port) = targets[i % targets.len()];
-        match TcpStream::connect((host.as_str(), port)).await {
-            Err(error) => {
-                warn!(%error, "Failed to connect");
-                time::sleep(BACKOFF).await;
-            }
-            Ok(mut socket) => {
-                debug!(reverse, "Connected to {}:{}", host, port);
-                if reverse {
-                    loop {
-                        buf.clear();
-                        match read_write(&mut socket, &mut buf).await {
-                            Ok(0) => {
-                                debug!(%host, port, "Closed");
-                                break;
-                            }
-                            Ok(sz) => {
-                                debug!(%host, port, "Echoed {}B", sz);
-                                tokio::task::yield_now().await;
-                            }
-                            Err(error) => {
-                                warn!(%host, port, %error);
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    let mut n = 0;
-                    loop {
-                        n += 1;
-                        buf.clear();
-                        match write_read(&mut socket, MESSAGE, &mut buf).await {
-                            Err(error) => {
-                                warn!(%error, "Failed to send message");
-                                time::sleep(BACKOFF).await;
-                            }
-                            Ok(sz) => {
-                                tokio::task::yield_now().await;
-                                debug!(
-                                    %n,
-                                    %host,
-                                    port,
-                                    "Read {}B: {:?}",
-                                    sz,
-                                    std::str::from_utf8(buf.as_ref()).unwrap()
-                                );
-                            }
-                        }
-                        if n == limit {
-                            break;
-                        }
-                    }
-                }
-            }
+        let t = &targets[i % targets.len()];
+        let span = info_span!("conn", server.addr = %t);
+        if let Err(error) = target_client(t, &mut buf, limit, reverse)
+            .instrument(span.clone())
+            .await
+        {
+            span.in_scope(move || warn!(%error, "Failed to connect"));
+            time::sleep(BACKOFF).await;
+        }
+    }
+}
+
+async fn target_client(
+    Target(host, port): &Target,
+    buf: &mut BytesMut,
+    limit: usize,
+    reverse: bool,
+) -> std::io::Result<()> {
+    let mut socket = TcpStream::connect((host.as_str(), *port)).await?;
+    debug!("Connected");
+
+    let mut n = 0;
+    loop {
+        n += 1;
+        debug!(%n, %limit, "Echoing");
+        buf.clear();
+        let sz = if reverse {
+            read_write(&mut socket, buf).await?
+        } else {
+            write_read(&mut socket, buf, MESSAGE.as_bytes()).await?
         };
+        if sz == 0 {
+            debug!("Closed");
+            return Ok(());
+        }
+
+        if n == limit {
+            debug!("Completed");
+            return Ok(());
+        }
+
+        tokio::task::yield_now().await;
     }
 }
 
 async fn write_read(
     socket: &mut TcpStream,
-    msg: &str,
     buf: &mut BytesMut,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    socket.write_all(msg.as_bytes()).await?;
-    socket.read_buf(buf).err_into().await
+    msg: &[u8],
+) -> std::io::Result<usize> {
+    socket.write_all(msg).await?;
+    debug!(write.sz = msg.len());
+
+    let sz = socket.read_buf(buf).await?;
+    debug!(read.sz = %sz);
+
+    Ok(sz)
 }
 
-async fn read_write(
-    socket: &mut TcpStream,
-    buf: &mut BytesMut,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let sz = socket.read_buf(buf).await?;
-    let mut remaining = sz;
+async fn read_write(socket: &mut TcpStream, buf: &mut BytesMut) -> std::io::Result<usize> {
+    let rsz = socket.read_buf(buf).await?;
+    debug!(read.sz = %rsz);
+
+    let mut remaining = rsz;
     while remaining != 0 {
-        remaining -= socket.write_buf(buf).await?;
+        let wsz = socket.write_buf(buf).await?;
+        debug!(write.sz = %wsz);
+        remaining -= wsz;
     }
-    Ok(sz)
+
+    Ok(rsz)
 }
 
 // === impl Target ===
@@ -234,6 +218,12 @@ impl std::str::FromStr for Target {
         };
 
         Ok(Target(host, uri.port_u16().unwrap_or(4444)))
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.0, self.1)
     }
 }
 
