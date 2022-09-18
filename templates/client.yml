@@ -36,10 +36,11 @@ spec:
             - client
             - --concurrency={{.Values.client.concurrency | default 1}}
             - --messages-per-connection={{.Values.client.messagesPerConnection | default 1}}
-            - --message={{.Values.client.message}}
             {{- if .Values.reverse }}
             - --reverse
             {{- end }}
+            - --message
+            - {{.Values.client.message | quote}}
             {{- range $i, $e := until (.Values.server.services | int) }}
             - {{printf "tcp://echo-%03d:4444" $i}}
             {{- end }}
