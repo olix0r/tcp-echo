@@ -3,12 +3,16 @@ image: ghcr.io/olix0r/tcp-echo:v14
 reverse: false
 
 client:
+  message: |
+    PING
   replicas: 1
   concurrency: 1
   messagesPerConnection: 100000
   linkerdInject: false
 
 server:
+  message: |
+    PONG
   services: 1
   replicas: 1
   linkerdInject: true

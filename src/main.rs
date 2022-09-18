@@ -3,7 +3,7 @@
 use bytes::BytesMut;
 use clap::Parser;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -15,11 +15,6 @@ use tokio::{
 };
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
-const MESSAGE: &str = "heya!
-
-how's it going?
-";
-
 #[derive(clap::Parser)]
 struct TcpEcho {
     #[clap(subcommand)]
@@ -29,20 +24,33 @@ struct TcpEcho {
 #[derive(clap::Subcommand)]
 enum Cmd {
     Client {
-        #[clap(long, short, env, default_value = "1")]
+        #[clap(long, short, default_value = "1")]
         concurrency: usize,
-        #[clap(long, short, env, default_value = "1")]
+
+        #[clap(long, short = 'M', default_value = "1")]
         messages_per_connection: usize,
+
         #[clap(long, short = 'R')]
         reverse: bool,
+
+        #[clap(long, short, default_value = "PING\n")]
+        message: String,
+
         targets: Vec<Target>,
     },
     Server {
         #[clap(long, short = 'R')]
         reverse: bool,
+
+        #[clap(long, short, default_value = "PONG\n")]
+        message: String,
+
+        #[clap(long, short, default_value = "4444")]
         port: u16,
     },
 }
+
+const BUFSIZE: usize = 65 * 1024;
 
 #[derive(Clone)]
 enum Target {
@@ -58,26 +66,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             concurrency,
             messages_per_connection,
             reverse,
+            message,
             targets,
         } => {
             if targets.is_empty() {
                 return Err(InvalidTarget::Empty.into());
             }
             let rng = SmallRng::from_entropy();
+            let msg: Arc<str> = message.into();
             for id in 0..concurrency.max(1) {
                 tokio::spawn(
                     client(
                         targets.clone(),
                         messages_per_connection,
                         reverse,
+                        msg.clone(),
                         rng.clone(),
                     )
                     .instrument(info_span!("worker", %id)),
                 );
             }
         }
-        Cmd::Server { reverse, port } => {
-            tokio::spawn(server(reverse, port));
+        Cmd::Server {
+            reverse,
+            message,
+            port,
+        } => {
+            tokio::spawn(server(port, reverse, message.into()));
         }
     }
 
@@ -90,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     Ok(())
 }
 
-async fn server(reverse: bool, port: u16) {
+async fn server(port: u16, reverse: bool, message: Arc<str>) {
     let listen = match TcpListener::bind(SocketAddr::new(
         std::net::Ipv6Addr::UNSPECIFIED.into(),
         port,
@@ -134,9 +149,10 @@ async fn server(reverse: bool, port: u16) {
             warn!(%error, "Failed to set TCP_NODELAY");
             continue;
         }
+        let msg = message.clone();
         tokio::spawn(
             async move {
-                if let Err(error) = serve_conn(socket, MESSAGE.as_bytes(), reverse).await {
+                if let Err(error) = serve_conn(socket, &*msg, reverse).await {
                     warn!(%error, "Connection failed");
                 }
             }
@@ -145,15 +161,15 @@ async fn server(reverse: bool, port: u16) {
     }
 }
 
-async fn serve_conn(mut socket: TcpStream, msg: &[u8], reverse: bool) -> std::io::Result<()> {
+async fn serve_conn(mut socket: TcpStream, msg: &str, reverse: bool) -> std::io::Result<()> {
     info!("Accepted");
     let mut n = 0;
-    let mut buf = BytesMut::with_capacity(1024);
+    let mut buf = BytesMut::with_capacity(BUFSIZE);
     loop {
         let sz = if reverse {
             write_read(&mut socket, &mut buf, msg).await?
         } else {
-            read_write(&mut socket, &mut buf).await?
+            read_write(&mut socket, &mut buf, msg).await?
         };
         if sz == 0 {
             debug!("Closed");
@@ -165,14 +181,23 @@ async fn serve_conn(mut socket: TcpStream, msg: &[u8], reverse: bool) -> std::io
     }
 }
 
-async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: SmallRng) {
+async fn client(
+    targets: Vec<Target>,
+    limit: usize,
+    reverse: bool,
+    message: Arc<str>,
+    mut rng: SmallRng,
+) {
     const BACKOFF: time::Duration = time::Duration::from_secs(1);
 
-    let mut buf = BytesMut::with_capacity(MESSAGE.len());
+    let mut buf = BytesMut::with_capacity(BUFSIZE);
     loop {
-        let i = rng.gen::<usize>();
-        let target = &targets[i % targets.len()];
+        let target = {
+            let i = rng.gen::<usize>();
+            &targets[i % targets.len()]
+        };
         let span = info_span!("conn", server.addr = %target);
+
         let socket = match target.connect().instrument(span.clone()).await {
             Ok(socket) => socket,
             Err(error) => {
@@ -192,7 +217,7 @@ async fn client(targets: Vec<Target>, limit: usize, reverse: bool, mut rng: Smal
         let span = info_span!("conn", server.addr = %target, client.addr = %client_addr);
         debug!(parent: &span, "Connected");
 
-        if let Err(error) = target_client(socket, &mut buf, limit, reverse)
+        if let Err(error) = target_client(socket, &mut buf, limit, reverse, &*message)
             .instrument(span.clone())
             .await
         {
@@ -207,6 +232,7 @@ async fn target_client(
     buf: &mut BytesMut,
     limit: usize,
     reverse: bool,
+    message: &str,
 ) -> std::io::Result<()> {
     let mut n = 0;
     loop {
@@ -215,9 +241,9 @@ async fn target_client(
 
         buf.clear();
         let sz = if reverse {
-            read_write(&mut socket, buf).await?
+            read_write(&mut socket, buf, message).await?
         } else {
-            write_read(&mut socket, buf, MESSAGE.as_bytes()).await?
+            write_read(&mut socket, buf, message).await?
         };
         if sz == 0 {
             debug!("Closed");
@@ -232,32 +258,39 @@ async fn target_client(
     }
 }
 
+/// Sends a message and reads a response.
 async fn write_read(
     socket: &mut TcpStream,
     buf: &mut BytesMut,
-    msg: &[u8],
+    msg: &str,
 ) -> std::io::Result<usize> {
-    socket.write_all(msg).await?;
-    debug!(write.sz = msg.len());
+    socket.write_all(msg.as_bytes()).await?;
+    socket.flush().await?;
+    debug!(write.sz = %msg.len(), write.msg = ?msg);
 
     let sz = socket.read_buf(buf).await?;
-    debug!(read.sz = %sz);
+    debug!(read.sz = %sz, read.msg = ?std::str::from_utf8(&buf[..sz]).unwrap_or("<invalid>"));
 
     Ok(sz)
 }
 
-async fn read_write(socket: &mut TcpStream, buf: &mut BytesMut) -> std::io::Result<usize> {
-    let rsz = socket.read_buf(buf).await?;
-    debug!(read.sz = %rsz);
-
-    let mut remaining = rsz;
-    while remaining != 0 {
-        let wsz = socket.write_buf(buf).await?;
-        debug!(write.sz = %wsz);
-        remaining -= wsz;
+/// Reads a message and then echoes it back.
+async fn read_write(
+    socket: &mut TcpStream,
+    buf: &mut BytesMut,
+    msg: &str,
+) -> std::io::Result<usize> {
+    let sz = socket.read_buf(buf).await?;
+    debug!(read.sz = %sz, read.msg = ?std::str::from_utf8(&buf[..sz]).unwrap_or("<invalid>"));
+    if sz == 0 {
+        return Ok(0);
     }
 
-    Ok(rsz)
+    socket.write_all(msg.as_bytes()).await?;
+    debug!(write.sz = %msg.len(), write.msg = ?msg);
+    socket.flush().await?;
+
+    Ok(sz)
 }
 
 // === impl Target ===

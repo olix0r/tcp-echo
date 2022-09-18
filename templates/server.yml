@@ -5,6 +5,7 @@
 {{- $inject := .Values.server.linkerdInject }}
 {{- $opaque := .Values.server.opaque }}
 {{- $reverse := .Values.reverse }}
+{{- $message := .Values.server.message }}
 {{- range $i, $e := until (int .Values.server.services) }}
 ---
 apiVersion: v1
@@ -66,10 +67,11 @@ spec:
               value: debug
           args:
             - server
-            - "4444"
             {{- if $reverse }}
             - --reverse
             {{- end }}
+            - --message
+            - {{ $message | quote }}
           ports:
             - containerPort: 4444
               protocol: TCP
