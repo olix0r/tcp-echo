@@ -36,6 +36,9 @@ enum Cmd {
         #[clap(long, short, default_value = "PING\n")]
         message: String,
 
+        #[clap(long, default_value = "0")]
+        delay_ms: u64,
+
         targets: Vec<Target>,
     },
     Server {
@@ -44,6 +47,9 @@ enum Cmd {
 
         #[clap(long, short, default_value = "PONG\n")]
         message: String,
+
+        #[clap(long, default_value = "0")]
+        delay_ms: u64,
 
         #[clap(long, short, default_value = "4444")]
         port: u16,
@@ -67,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             messages_per_connection,
             reverse,
             message,
+            delay_ms,
             targets,
         } => {
             if targets.is_empty() {
@@ -81,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                         messages_per_connection,
                         reverse,
                         msg.clone(),
+                        time::Duration::from_millis(delay_ms),
                         rng.clone(),
                     )
                     .instrument(info_span!("worker", %id)),
@@ -90,9 +98,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         Cmd::Server {
             reverse,
             message,
+            delay_ms,
             port,
         } => {
-            tokio::spawn(server(port, reverse, message.into()));
+            tokio::spawn(server(
+                port,
+                reverse,
+                message.into(),
+                time::Duration::from_millis(delay_ms),
+            ));
         }
     }
 
@@ -105,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     Ok(())
 }
 
-async fn server(port: u16, reverse: bool, message: Arc<str>) {
+async fn server(port: u16, reverse: bool, message: Arc<str>, delay: time::Duration) {
     let listen = match TcpListener::bind(SocketAddr::new(
         std::net::Ipv6Addr::UNSPECIFIED.into(),
         port,
@@ -152,7 +166,7 @@ async fn server(port: u16, reverse: bool, message: Arc<str>) {
         let msg = message.clone();
         tokio::spawn(
             async move {
-                if let Err(error) = serve_conn(socket, &*msg, reverse).await {
+                if let Err(error) = serve_conn(socket, &*msg, reverse, delay).await {
                     warn!(%error, "Connection failed");
                 }
             }
@@ -161,11 +175,20 @@ async fn server(port: u16, reverse: bool, message: Arc<str>) {
     }
 }
 
-async fn serve_conn(mut socket: TcpStream, msg: &str, reverse: bool) -> std::io::Result<()> {
+async fn serve_conn(
+    mut socket: TcpStream,
+    msg: &str,
+    reverse: bool,
+    delay: time::Duration,
+) -> std::io::Result<()> {
     info!("Accepted");
     let mut n = 0;
     let mut buf = BytesMut::with_capacity(BUFSIZE);
     loop {
+        n += 1;
+        debug!(%n);
+
+        buf.clear();
         let sz = if reverse {
             write_read(&mut socket, &mut buf, msg).await?
         } else {
@@ -175,9 +198,8 @@ async fn serve_conn(mut socket: TcpStream, msg: &str, reverse: bool) -> std::io:
             debug!("Closed");
             return Ok(());
         }
-        n += 1;
-        debug!(%n);
-        buf.clear()
+
+        time::sleep(delay).await;
     }
 }
 
@@ -186,6 +208,7 @@ async fn client(
     limit: usize,
     reverse: bool,
     message: Arc<str>,
+    delay: time::Duration,
     mut rng: SmallRng,
 ) {
     const BACKOFF: time::Duration = time::Duration::from_secs(1);
@@ -215,7 +238,7 @@ async fn client(
         let span = info_span!("conn", server.addr = %target, client.addr = %client_addr);
         debug!(parent: &span, "Connected");
 
-        if let Err(error) = target_client(socket, &mut buf, limit, reverse, &*message)
+        if let Err(error) = target_client(socket, &mut buf, limit, reverse, &*message, delay)
             .instrument(span.clone())
             .await
         {
@@ -231,6 +254,7 @@ async fn target_client(
     limit: usize,
     reverse: bool,
     message: &str,
+    delay: time::Duration,
 ) -> std::io::Result<()> {
     let mut n = 0;
     loop {
@@ -252,7 +276,7 @@ async fn target_client(
             debug!("Completed");
             return Ok(());
         }
-        tokio::task::yield_now().await;
+        time::sleep(delay).await;
     }
 }
 
